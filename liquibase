@@ -1,0 +1,381 @@
+import json
+import requests
+import os
+import sys
+import random
+import string
+import boto3
+import mysql.connector
+import base64
+import time
+from botocore.exceptions import ClientError
+
+secret_name = "k8s_crt_secret"
+rds_secret_name = "RdsMasterCreds"
+region_name = "ap-south-1"
+
+# Create a Secrets Manager client
+session = boto3.session.Session()
+client = session.client(
+    service_name='secretsmanager',
+    region_name=region_name
+)
+cname_client = boto3.client('route53')
+
+def encrypt_data(json_response):
+    kms_client = boto3.client('kms')
+    try:
+        response = kms_client.encrypt(
+            KeyId='arn:aws:kms:ap-south-1:185152735195:key/41d70672-0144-4ff3-922b-f030099cb37b',
+            Plaintext=json_response
+        )
+        return response['CiphertextBlob']
+    except ClientError as e:
+        print(f"Error encrypting data: {e}")
+        return None
+        
+def decrypt_data(ciphertext_blob):
+    kms_client = boto3.client('kms')
+    try:
+        response = kms_client.decrypt(
+            CiphertextBlob=ciphertext_blob
+        )
+        return response['Plaintext']
+    except ClientError as e:
+        print(f"Error decrypting data: {e}")
+        return None
+
+# Generate a random password for the new user
+def generate_random_password(length=16):
+    characters = string.ascii_letters + string.digits
+    return ''.join(random.choice(characters) for i in range(length))
+      
+def db_actions(db_name, host_name, db_user, db_password, namespace, new_user_password):
+    new_user_name = f"lb-{namespace}"
+    create_user_flag = 1
+    # print(f"DB_Host: {host_name}.cc7rz7o670iq.ap-south-1.rds.amazonaws.com\nDB_Name: {db_name}\nDB_Password: {db_password}")
+    # Connect to the MySQL RDS instancen
+    connection = mysql.connector.connect(
+        host = f"{host_name}.cc7rz7o670iq.ap-south-1.rds.amazonaws.com",
+        user=db_user,
+        password=db_password,
+        database=db_name
+    )
+    # MySQL command to create a new user
+    check_user_query = f"SELECT user FROM mysql.user WHERE user='{new_user_name}';"
+    create_user_query = f"CREATE USER '{new_user_name}'@'%' IDENTIFIED BY '{new_user_password}';"
+    grant_show_database = f"GRANT SHOW DATABASES ON . TO '{new_user_name}'@'%';"
+    grant_query = f"GRANT CREATE, ALTER, INDEX, REFERENCES ON {db_name}.* TO '{new_user_name}'@'%';"
+    grant_privileges_query1 = f"GRANT ALL PRIVILEGES ON {db_name}.DATABASECHANGELOG TO '{new_user_name}'@'%';"
+    grant_privileges_query2 = f"GRANT ALL PRIVILEGES ON {db_name}.DATABASECHANGELOGLOCK TO '{new_user_name}'@'%';"
+    grant_privileges_query3 = f"GRANT ALL PRIVILEGES ON {db_name}.databasechangelog TO '{new_user_name}'@'%';"
+    grant_privileges_query4 = f"GRANT ALL PRIVILEGES ON {db_name}.databasechangeloglock TO '{new_user_name}'@'%';"
+    grant_privileges_query5 = f"GRANT ALL PRIVILEGES ON {db_name}.DatabaseChangeLog TO '{new_user_name}'@'%';"
+    grant_privileges_query6 = f"GRANT ALL PRIVILEGES ON {db_name}.DatabaseChangeLogLock TO '{new_user_name}'@'%';"
+    grant_privileges_query7 = f"GRANT ALL PRIVILEGES ON {db_name}.DataBaseChangeLog TO '{new_user_name}'@'%';"
+    grant_privileges_query8 = f"GRANT ALL PRIVILEGES ON {db_name}.DataBaseChangeLogLock TO '{new_user_name}'@'%';"
+    # Execute the SQL commands
+    try:
+        cursor = connection.cursor()
+        cursor.execute(check_user_query)
+        result = cursor.fetchone()
+        if result is not None:
+            create_user_flag = 0
+            print(f"User {new_user_name} already exist")
+    except mysql.connector.Error as err:
+        print(f"Error: {err}")
+    time.sleep(1)
+    
+    print(f"create_user_flag = {create_user_flag}")
+    if create_user_flag == 1:
+        try:
+            cursor = connection.cursor()
+            cursor.execute(create_user_query)
+            connection.commit()
+            print(f"Created the user {new_user_name}")
+        except mysql.connector.Error as err:
+            print(f"Error: {err}")
+            return err
+        time.sleep(1)
+    
+    try:
+        cursor = connection.cursor()
+        cursor.execute(grant_show_database)
+        connection.commit()
+        print(f"Show DB permission granted to the user {new_user_name}")
+    except mysql.connector.Error as err:
+        print(f"Error: {err}")
+        return err
+    time.sleep(1)
+    try:
+        cursor = connection.cursor()
+        cursor.execute(grant_query)
+        connection.commit()
+        print(f"Permission granted to DB '{db_name}' to the user {new_user_name}")
+    except mysql.connector.Error as err:
+        print(f"Error: {err}")
+        return err
+    time.sleep(1)
+        
+    try:
+        cursor = connection.cursor()
+        cursor.execute(grant_privileges_query1)
+        connection.commit()
+        print(f"Permission granted to '{db_name}'.DATABASECHANGELOG to the user {new_user_name}")
+    except mysql.connector.Error as err:
+        print(f"Error: {err}")
+        return err
+    time.sleep(1)
+    try:
+        cursor = connection.cursor()
+        cursor.execute(grant_privileges_query2)
+        connection.commit()
+        print(f"Permission granted to '{db_name}'.DATABASECHANGELOGLOCK to the user {new_user_name}")
+    except mysql.connector.Error as err:
+        print(f"Error: {err}")
+        return err
+    time.sleep(1)
+        
+    try:
+        cursor = connection.cursor()
+        cursor.execute(grant_privileges_query3)
+        connection.commit()
+        print(f"Permission granted to '{db_name}'.databasechangelog to the user {new_user_name}")
+    except mysql.connector.Error as err:
+        print(f"Error: {err}")
+        return err
+    time.sleep(1)
+    try:
+        cursor = connection.cursor()
+        cursor.execute(grant_privileges_query4)
+        connection.commit()
+        print(f"Permission granted to '{db_name}'.databasechangeloglock to the user {new_user_name}")
+    except mysql.connector.Error as err:
+        print(f"Error: {err}")
+        return err
+    time.sleep(1)
+        
+    try:
+        cursor = connection.cursor()
+        cursor.execute(grant_privileges_query5)
+        connection.commit()
+        print(f"Permission granted to '{db_name}'.DatabaseChangeLog to the user {new_user_name}")
+    except mysql.connector.Error as err:
+        print(f"Error: {err}")
+        return err
+    time.sleep(1)
+    try:
+        cursor = connection.cursor()
+        cursor.execute(grant_privileges_query6)
+        connection.commit()
+        print(f"Permission granted to '{db_name}'.DatabaseChangeLogLock to the user {new_user_name}")
+    except mysql.connector.Error as err:
+        print(f"Error: {err}")
+        return err
+    time.sleep(1)
+        
+    try:
+        cursor = connection.cursor()
+        cursor.execute(grant_privileges_query7)
+        connection.commit()
+        print(f"Permission granted to '{db_name}'.DataBaseChangeLog to the user {new_user_name}")
+    except mysql.connector.Error as err:
+        print(f"Error: {err}")
+        return err
+    time.sleep(1)
+    try:
+        cursor = connection.cursor()
+        cursor.execute(grant_privileges_query8)
+        connection.commit()
+        print(f"Permission granted to '{db_name}'.DataBaseChangeLogLock to the user {new_user_name}")
+    except mysql.connector.Error as err:
+        print(f"Error: {err}")
+        return err
+    finally:
+        cursor.close()
+        connection.close()
+    time.sleep(1)
+    return "All permission granted successfully"
+    
+def k8s_action(target_function_name, payload):
+    lambda_client = boto3.client('lambda')
+    try: 
+        response_k8_secret = lambda_client.invoke(FunctionName=target_function_name,
+            InvocationType='RequestResponse',
+            Payload=json.dumps(payload)
+        )
+    except ClientError as e:
+        return e
+    return response_k8_secret
+
+def get_cname_value(zone_id, record_name):
+    try:
+        response = cname_client.list_resource_record_sets(
+            HostedZoneId=zone_id,
+            StartRecordName=record_name,
+            StartRecordType='CNAME',
+            MaxItems='1'
+        )
+        if 'ResourceRecordSets' in response:
+            cname_record = response['ResourceRecordSets'][0]
+            if cname_record['Name'].endswith("."):
+                cname = cname_record['Name'][:-1]
+            else:
+                cname = cname_record['Name']
+
+            if cname_record['Type'] == 'CNAME' and cname == record_name:
+                return cname_record['ResourceRecords'][0]['Value']
+        return None
+    except Exception as e:
+        print(f"Error: {e}")
+        return None
+
+def lambda_handler(event, context):
+    zone_id = 'Z04632763QVT6MD8HJ6V0'
+    host_admin_dict = {
+        "cfpayoutrecon-gamma": "admin",
+        "cf-sbox-cluster1": "admin",
+        "cf-sbox-global-launch-sanity-cfpayouts": "admin",
+        "cf-sbox-keycloak": "admin",
+        "cf-sbox-sellers": "nfcpay",
+        "domainlist": "admin",
+        "gamma-dbs": "admin",
+        "gamma-services-cluster1": "nfcpay",
+        "rms-gamma": "admin"
+    }
+    try:
+        get_secret_value_response = client.get_secret_value(SecretId=secret_name)
+        # Getting the ca.crt and bearer token from secret manager
+        secretDict = json.loads(get_secret_value_response['SecretString'])
+        password = secretDict["password"]
+        cert = secretDict["ca.crt"]
+        decrypted_cert = decrypt_data(base64.b64decode(cert.encode())).decode()
+        final_cert = decrypted_cert[28:-26]
+        bearer_token = secretDict["bearer_token"]
+        final_bearer_token = decrypt_data(base64.b64decode(bearer_token.encode())).decode()
+        with open('/tmp/ca.crt', 'w') as f:
+            f.write(f'-----BEGIN CERTIFICATE-----\n{final_cert}\n-----END CERTIFICATE-----')
+    except ClientError as error:
+        sys.exit(f"{error}")
+
+    try:
+        get_rds_secret_value_response = client.get_secret_value(SecretId=rds_secret_name)
+        # Getting password for RDS from secret manager
+        rds_secretDict = json.loads(get_rds_secret_value_response['SecretString'])
+    except ClientError as error:
+        sys.exit(f"{error}")
+    
+    flag = 0
+    # destination_branch = event['pullrequest']["destination"]["branch"]["name"]
+    destination_branch = "liquibase_sbox"
+    print(destination_branch)
+    # branch_name = print(event["pullrequest"]["source"]["branch"]["name"])
+    # pullrequest=event['pullrequest']['merge_commit']['links']['self']['href']
+    # print(pullrequest)
+    # patch = pullrequest.replace("commit", "patch")
+    patch = "https://api.bitbucket.org/2.0/repositories/cashfree/k8s-prod/patch/706b6e0fd0c1"
+    print("--------------------PATCH--------------------")
+    print(patch)
+    
+    headers_bitbucket = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ATCTT3xFfGN0Xy_XEU8IWCIytVObNVsIvqw9eRlmOTnzctfE9-5MaWiaq8BDnHIgRUWkSXqtFuW_7jNfuZPQsmbrPNUh2xMFqxZOvZTed1OQriH6sPC5OLUBNjumyjLkCW19fKeSNyZjw6a3iq3zT_B_4-8Ua2EsjFUnLqpCE10YCOedmxGejgU=4FE623D1',
+    }
+    response = requests.get(patch,headers=headers_bitbucket)
+    changed_files=response.text
+    lines = changed_files.split('\n')
+    
+    changed_files_arr = []
+    for line in lines:
+        if line.startswith('+++'):
+            index = line.find('/')
+            if index != -1:
+                line = line[index:]
+            else:
+                pass
+            changed_files_arr.append(line)
+    
+    substrings = patch.rsplit('/', 2)
+    getfile_prefix = "/".join(substrings[:1])
+    getfile_prefix += f"/src/liquibase_sbox"
+    liquibase_file_path = ""
+    
+    print("-----------------------------------------------All list of changed files in PR-----------------------------------------------")
+    for i in range(len(changed_files_arr)):
+        print(changed_files_arr[i])
+        filename = os.path.basename(changed_files_arr[i])
+        last_part = filename.split('/')[-1]
+        print(last_part)
+
+        if last_part == 'liquibase_db.json':
+            flag = 1
+            liquibase_file_path = getfile_prefix + changed_files_arr[i]
+            break
+    if flag == 0:
+        sys.exit('Bye!!')
+        
+    print(liquibase_file_path)
+    
+    response = requests.get(liquibase_file_path,headers=headers_bitbucket)
+    k8s_apply_string = response.text
+    # print(k8s_apply_string)
+    data_dict = json.loads(k8s_apply_string.strip())
+    # print(data_dict)
+    namespace = data_dict.pop('namespace')
+    print(namespace)
+    env = data_dict.pop('environment')
+    print(env)
+    print(data_dict)
+    if env != "sbox" or destination_branch != "liquibase_sbox":
+        sys.exit("Environment mentioned is wrong or wrong destination branch")
+    new_user_name = f"lb-{namespace}"
+    new_user_password = generate_random_password()
+
+    target_function_name_get = "k8ssecretmanager"
+    payload_get = {
+        "Namespace": namespace,
+        "Secret": "db-secrets",
+        "Type": "",
+        "Key1": "liquibase.password",
+        "Key2": "",
+        "Key3": "",
+        "Key4": ""
+    }
+    response_k8_secret = k8s_action(target_function_name_get, payload_get)
+    response_payload = response_k8_secret['Payload'].read().decode('utf-8')
+    parsed_response_payload = json.loads(response_payload)
+    if "errorMessage" not in parsed_response_payload.keys():
+        user_password = parsed_response_payload["list_value_decode"][0]
+        new_user_password = user_password
+    else:
+        print("Secret does not exist")
+        target_function_name_post = "k8ssecretmanager2"
+        payload_post = {
+            "Namespace": namespace,
+            "Secret": "db-secrets",
+            "Type": "Opaque",
+            "Key1": "liquibase.user",
+            "Value1": new_user_name,
+            "Key2": "liquibase.password",
+            "Value2": new_user_password,
+            "Key3": "",
+            "Value3": "",
+            "Key4": "",
+            "Value4": ""
+        }
+        response_k8_secret = k8s_action(target_function_name_post, payload_post)
+    # print(new_user_password)
+    db_list = data_dict.keys()
+    for db_name in db_list:
+        db_host = data_dict[db_name]
+        if ".db" in db_host:
+            db_host = get_cname_value(zone_id, db_host)
+        print(f"------------{db_host}")
+        host_name = db_host.split('.')[0]
+        print(f"------------{host_name}")
+        if host_name in host_admin_dict.keys():
+            db_user = host_admin_dict[host_name]
+        else:
+            db_user = "admin"
+        db_password = rds_secretDict[host_name]
+        db_actions(db_name, host_name, db_user, db_password, namespace, new_user_password)
